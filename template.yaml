@@ -1,0 +1,396 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: LexiGuard AI - serverless legal intake, transcription, analysis, and chat
+
+Parameters:
+  BucketName:
+    Type: String
+    Default: "lexiguard-legal-data-ps-b402"
+    Description: Globally unique S3 bucket name. Use a different value per sandbox/developer.
+  KnowledgeBaseId:
+    Type: String
+    Default: "TUGECFALFA"
+    Description: Existing Amazon Bedrock Knowledge Base ID.
+  KnowledgeBaseDataSourceId:
+    Type: String
+    Default: ""
+    Description: Optional Bedrock KB data source ID. Leave blank to use the first data source in the KB.
+  DBName:
+    Type: String
+    Default: lexiguard
+  DBUsername:
+    Type: String
+    Default: dbadmin
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: PostgreSQL master password. Provide this during deploy.
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.micro
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC where the PostgreSQL security group is created.
+  DBSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: At least two subnet IDs for the RDS DB subnet group.
+  DBAllowedCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: CIDR allowed to connect to PostgreSQL. Restrict this for real environments.
+
+Globals:
+  Api:
+    Cors:
+      AllowMethods: "'GET,POST,DELETE,OPTIONS'"
+      AllowHeaders: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'"
+      AllowOrigin: "'*'"
+
+Resources:
+  ServerlessRestApiGatewayResponseDefault4XX:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref ServerlessRestApi
+      ResponseType: DEFAULT_4XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'"
+        gatewayresponse.header.Access-Control-Allow-Methods: "'GET,POST,DELETE,OPTIONS'"
+
+  ServerlessRestApiGatewayResponseDefault5XX:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref ServerlessRestApi
+      ResponseType: DEFAULT_5XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'"
+        gatewayresponse.header.Access-Control-Allow-Methods: "'GET,POST,DELETE,OPTIONS'"
+
+  # 1. Security (From previous steps)
+  LexiGuardKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: "Key for LexiGuard"
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: Enable IAM Admin Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+
+  LexiGuardBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: "AES256"
+      # ADD THIS SECTION BELOW
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, POST, HEAD]
+            AllowedOrigins: ['*'] # In production, change this to your real domain
+            MaxAge: 3000     
+
+  # 5. THE DATABASE (Updated with Subnet Group)
+  LexiGuardDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      AllocatedStorage: '20'
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: postgres
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBName: !Ref DBName
+      PubliclyAccessible: true
+      DBSubnetGroupName: !Ref LexiGuardDBSubnetGroup # <--- LINKS TO THE SUBNET GROUP
+      VPCSecurityGroups:
+        - !GetAtt LexiGuardDBSecurityGroup.GroupId
+
+  # 3. THE FIREWALL (Security Group)
+  LexiGuardDBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow Lambda to connect to PostgreSQL
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: !Ref DBAllowedCidr
+
+ # 4. THE DB SUBNET GROUP (Tells RDS which subnets to use)
+  LexiGuardDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: "Subnets for LexiGuard RDS"
+      SubnetIds: !Ref DBSubnetIds
+
+  # 4. THE BRAIN (Analyzer Lambda with DB Config)
+  LexiGuardAnalyzer:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: analyzer.lambda_handler
+      Runtime: python3.11
+      Timeout: 60
+      Environment:
+        Variables:
+          BEDROCK_MODEL_ID: "anthropic.claude-3-sonnet-20240229-v1:0"
+          DB_HOST: !GetAtt LexiGuardDB.Endpoint.Address
+          DB_NAME: !Ref DBName
+          DB_USER: !Ref DBUsername
+          DB_PASS: !Ref DBPassword
+          KB_DOC_PREFIX: "LexiGuard-transcripts/"
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: "bedrock:InvokeModel"
+              Resource: "*"
+            - Effect: Allow
+              Action: "kms:Decrypt"
+              Resource: !GetAtt LexiGuardKey.Arn
+        - S3ReadPolicy:
+            BucketName: !Ref BucketName
+        - S3WritePolicy:
+            BucketName: !Ref BucketName
+
+  # (LexiGuardWorkflow and LexiGuardWatchman remain exactly the same as Step 5)
+  LexiGuardWorkflow:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Definition:
+        StartAt: StartTranscription
+        States:
+          StartTranscription:
+            Type: Task
+            Resource: "arn:aws:states:::aws-sdk:transcribe:startTranscriptionJob"
+            Parameters:
+              TranscriptionJobName.$: "$$.Execution.Name"
+              LanguageCode: "en-US"
+              Media:
+                MediaFileUri.$: "States.Format('s3://{}/{}', $.bucket, $.key)"
+              OutputBucketName: !Ref BucketName
+              OutputKey: "LexiGuard-transcribe-json/"
+              Settings:
+                ShowSpeakerLabels: true
+                MaxSpeakerLabels: 2
+            Next: Wait30Seconds
+          Wait30Seconds:
+            Type: Wait
+            Seconds: 20
+            Next: CheckJobStatus
+          CheckJobStatus:
+            Type: Task
+            Resource: "arn:aws:states:::aws-sdk:transcribe:getTranscriptionJob"
+            Parameters:
+              TranscriptionJobName.$: "$$.Execution.Name"
+            Next: IsItDone?
+          IsItDone?:
+            Type: Choice
+            Choices:
+              - Variable: "$.TranscriptionJob.TranscriptionJobStatus"
+                StringEquals: "COMPLETED"
+                Next: AnalysisWithBedrock
+              - Variable: "$.TranscriptionJob.TranscriptionJobStatus"
+                StringEquals: "FAILED"
+                Next: JobFailed
+            Default: Wait30Seconds
+          AnalysisWithBedrock:
+            Type: Task
+            Resource: !GetAtt LexiGuardAnalyzer.Arn
+            Next: SyncKnowledgeBase
+          SyncKnowledgeBase:
+            Type: Task
+            Resource: !GetAtt LexiGuardKBSync.Arn
+            End: true
+          JobFailed:
+            Type: Fail
+            Error: "TranscribeJobFailed"
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: ["transcribe:*", "lambda:InvokeFunction"]
+              Resource: "*"
+            - Effect: Allow
+              Action: ["kms:Decrypt", "kms:GenerateDataKey"]
+              Resource: !GetAtt LexiGuardKey.Arn
+        - S3ReadPolicy:
+            BucketName: !Ref BucketName
+        - S3WritePolicy:
+            BucketName: !Ref BucketName
+
+  LexiGuardWatchman:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.lambda_handler
+      Runtime: python3.11
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref LexiGuardWorkflow
+      Policies:
+        - StepFunctionsExecutionPolicy:
+            StateMachineName: !GetAtt LexiGuardWorkflow.Name
+        - S3ReadPolicy:
+            BucketName: !Ref BucketName
+      Events:
+        NewFileUpload:
+          Type: S3
+          Properties:
+            Bucket: !Ref LexiGuardBucket
+            Events: s3:ObjectCreated:*
+
+  # Sync Bedrock Knowledge Base after transcript changes
+  LexiGuardKBSync:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: kb_sync.lambda_handler
+      Runtime: python3.11
+      Timeout: 30
+      Environment:
+        Variables:
+          KB_ID: !Ref KnowledgeBaseId
+          DATA_SOURCE_ID: !Ref KnowledgeBaseDataSourceId
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - "bedrock:StartIngestionJob"
+                - "bedrock:ListDataSources"
+              Resource: "*"
+
+  # 6. THE API LAMBDA (To read from DB)
+  LexiGuardFetcher:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: fetcher.lambda_handler
+      Runtime: python3.11
+      Environment:
+        Variables:
+          DB_HOST: !GetAtt LexiGuardDB.Endpoint.Address
+          DB_NAME: !Ref DBName
+          DB_USER: !Ref DBUsername
+          DB_PASS: !Ref DBPassword
+      Events:
+        GetCases:
+          Type: Api
+          Properties:
+            Path: /cases
+            Method: get
+
+  # API to delete a case and related S3 objects
+  LexiGuardDeleter:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: deleter.lambda_handler
+      Runtime: python3.11
+      Timeout: 30
+      Environment:
+        Variables:
+          DB_HOST: !GetAtt LexiGuardDB.Endpoint.Address
+          DB_NAME: !Ref DBName
+          DB_USER: !Ref DBUsername
+          DB_PASS: !Ref DBPassword
+          KB_ID: !Ref KnowledgeBaseId
+          DATA_SOURCE_ID: !Ref KnowledgeBaseDataSourceId
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - "s3:DeleteObject"
+              Resource: !Sub "arn:aws:s3:::${BucketName}/*"
+            - Effect: Allow
+              Action:
+                - "transcribe:DeleteTranscriptionJob"
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - "bedrock:StartIngestionJob"
+                - "bedrock:ListDataSources"
+              Resource: "*"
+      Events:
+        DeleteCase:
+          Type: Api
+          Properties:
+            Path: /cases/{id}
+            Method: delete
+
+   # API to get Upload URL
+  LexiGuardSigner:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: signer.lambda_handler
+      Runtime: python3.11
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref BucketName
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref BucketName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - "kms:Decrypt"
+                - "kms:GenerateDataKey"
+              Resource: !GetAtt LexiGuardKey.Arn
+      Events:
+        GetURL:
+          Type: Api
+          Properties:
+            Path: /sign
+            Method: get
+
+  # API to Chat with Knowledge Base
+  LexiGuardChat:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: chat.lambda_handler
+      Runtime: python3.11
+      Timeout: 30
+      Environment:
+        Variables:
+          KB_ID: !Ref KnowledgeBaseId
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - "bedrock:RetrieveAndGenerate"
+                - "bedrock:Retrieve"
+                - "bedrock:InvokeModel"
+              Resource: "*"
+      Events:
+        PostChat:
+          Type: Api
+          Properties:
+            Path: /chat
+            Method: post         
+
+Outputs:
+  ApiUrl:
+    Description: "URL for the cases API"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/cases"
+  ApiBaseUrl:
+    Description: "Base URL for the React API_BASE setting"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+  DataBucketName:
+    Description: "S3 bucket for uploaded audio and transcripts"
+    Value: !Ref LexiGuardBucket
+  DatabaseEndpoint:
+    Description: "RDS PostgreSQL endpoint"
+    Value: !GetAtt LexiGuardDB.Endpoint.Address
+  WorkflowArn:
+    Description: "LexiGuard Step Functions workflow ARN"
+    Value: !Ref LexiGuardWorkflow

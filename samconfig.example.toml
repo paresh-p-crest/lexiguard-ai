@@ -1,0 +1,31 @@
+version = 0.1
+
+[default.global.parameters]
+region = "us-east-1"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.validate.parameters]
+lint = false
+
+[default.deploy.parameters]
+stack_name = "lexiguard-sandbox-YOURNAME"
+region = "us-east-1"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+resolve_s3 = true
+s3_prefix = "lexiguard-sandbox-YOURNAME"
+parameter_overrides = [
+  "BucketName=lexiguard-sandbox-YOURNAME-ACCOUNTID",
+  "KnowledgeBaseId=YOUR_BEDROCK_KB_ID",
+  "KnowledgeBaseDataSourceId=",
+  "DBName=lexiguard",
+  "DBUsername=dbadmin",
+  "DBPassword=CHANGE_ME_FOR_SANDBOX",
+  "DBInstanceClass=db.t3.micro",
+  "VpcId=vpc-xxxxxxxxxxxxxxxxx",
+  "DBSubnetIds=subnet-xxxxxxxxxxxxxxxxx,subnet-yyyyyyyyyyyyyyyyy",
+  "DBAllowedCidr=0.0.0.0/0"
+]
