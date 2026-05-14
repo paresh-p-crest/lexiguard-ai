@@ -3,10 +3,16 @@ Transform: AWS::Serverless-2016-10-31
 Description: LexiGuard AI - serverless legal intake, transcription, analysis, and chat
 
 Parameters:
+  ResourcePrefix:
+    Type: String
+    Default: sandbox
+    AllowedPattern: "^[a-z0-9-]+$"
+    MaxLength: 24
+    Description: Lowercase namespace/prefix for generated resource names, for example paresh, friend1, demo.
   BucketName:
     Type: String
-    Default: "lexiguard-legal-data-ps-b402"
-    Description: Globally unique S3 bucket name. Use a different value per sandbox/developer.
+    Default: ""
+    Description: Optional globally unique S3 bucket name. Leave blank to generate one from ResourcePrefix, account, and region.
   KnowledgeBaseId:
     Type: String
     Default: "TUGECFALFA"
@@ -40,18 +46,24 @@ Parameters:
     Default: 0.0.0.0/0
     Description: CIDR allowed to connect to PostgreSQL. Restrict this for real environments.
 
-Globals:
-  Api:
-    Cors:
-      AllowMethods: "'GET,POST,DELETE,OPTIONS'"
-      AllowHeaders: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'"
-      AllowOrigin: "'*'"
+Conditions:
+  HasBucketName: !Not [!Equals [!Ref BucketName, ""]]
 
 Resources:
+  LexiGuardApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "${ResourcePrefix}-lexiguard-api"
+      StageName: Prod
+      Cors:
+        AllowMethods: "'GET,POST,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+
   ServerlessRestApiGatewayResponseDefault4XX:
     Type: AWS::ApiGateway::GatewayResponse
     Properties:
-      RestApiId: !Ref ServerlessRestApi
+      RestApiId: !Ref LexiGuardApi
       ResponseType: DEFAULT_4XX
       ResponseParameters:
         gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
@@ -61,7 +73,7 @@ Resources:
   ServerlessRestApiGatewayResponseDefault5XX:
     Type: AWS::ApiGateway::GatewayResponse
     Properties:
-      RestApiId: !Ref ServerlessRestApi
+      RestApiId: !Ref LexiGuardApi
       ResponseType: DEFAULT_5XX
       ResponseParameters:
         gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
@@ -72,7 +84,7 @@ Resources:
   LexiGuardKey:
     Type: AWS::KMS::Key
     Properties:
-      Description: "Key for LexiGuard"
+      Description: !Sub "Key for ${ResourcePrefix} LexiGuard"
       KeyPolicy:
         Version: "2012-10-17"
         Statement:
@@ -83,10 +95,19 @@ Resources:
             Action: "kms:*"
             Resource: "*"
 
+  LexiGuardKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/${ResourcePrefix}-lexiguard"
+      TargetKeyId: !Ref LexiGuardKey
+
   LexiGuardBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Ref BucketName
+      BucketName: !If
+        - HasBucketName
+        - !Ref BucketName
+        - !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -103,6 +124,7 @@ Resources:
   LexiGuardDB:
     Type: AWS::RDS::DBInstance
     Properties:
+      DBInstanceIdentifier: !Sub "${ResourcePrefix}-lexiguard-db"
       AllocatedStorage: '20'
       DBInstanceClass: !Ref DBInstanceClass
       Engine: postgres
@@ -118,7 +140,8 @@ Resources:
   LexiGuardDBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow Lambda to connect to PostgreSQL
+      GroupName: !Sub "${ResourcePrefix}-lexiguard-db-sg"
+      GroupDescription: !Sub "Allow ${ResourcePrefix} LexiGuard Lambda to connect to PostgreSQL"
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -130,6 +153,7 @@ Resources:
   LexiGuardDBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
+      DBSubnetGroupName: !Sub "${ResourcePrefix}-lexiguard-db-subnets"
       DBSubnetGroupDescription: "Subnets for LexiGuard RDS"
       SubnetIds: !Ref DBSubnetIds
 
@@ -137,6 +161,7 @@ Resources:
   LexiGuardAnalyzer:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${ResourcePrefix}-lexiguard-analyzer"
       CodeUri: src/
       Handler: analyzer.lambda_handler
       Runtime: python3.11
@@ -158,14 +183,15 @@ Resources:
               Action: "kms:Decrypt"
               Resource: !GetAtt LexiGuardKey.Arn
         - S3ReadPolicy:
-            BucketName: !Ref BucketName
+            BucketName: !If [HasBucketName, !Ref BucketName, !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"]
         - S3WritePolicy:
-            BucketName: !Ref BucketName
+            BucketName: !If [HasBucketName, !Ref BucketName, !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"]
 
   # (LexiGuardWorkflow and LexiGuardWatchman remain exactly the same as Step 5)
   LexiGuardWorkflow:
     Type: AWS::Serverless::StateMachine
     Properties:
+      Name: !Sub "${ResourcePrefix}-lexiguard-workflow"
       Definition:
         StartAt: StartTranscription
         States:
@@ -177,7 +203,7 @@ Resources:
               LanguageCode: "en-US"
               Media:
                 MediaFileUri.$: "States.Format('s3://{}/{}', $.bucket, $.key)"
-              OutputBucketName: !Ref BucketName
+              OutputBucketName: !If [HasBucketName, !Ref BucketName, !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"]
               OutputKey: "LexiGuard-transcribe-json/"
               Settings:
                 ShowSpeakerLabels: true
@@ -223,13 +249,14 @@ Resources:
               Action: ["kms:Decrypt", "kms:GenerateDataKey"]
               Resource: !GetAtt LexiGuardKey.Arn
         - S3ReadPolicy:
-            BucketName: !Ref BucketName
+            BucketName: !If [HasBucketName, !Ref BucketName, !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"]
         - S3WritePolicy:
-            BucketName: !Ref BucketName
+            BucketName: !If [HasBucketName, !Ref BucketName, !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"]
 
   LexiGuardWatchman:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${ResourcePrefix}-lexiguard-watchman"
       CodeUri: src/
       Handler: app.lambda_handler
       Runtime: python3.11
@@ -240,7 +267,7 @@ Resources:
         - StepFunctionsExecutionPolicy:
             StateMachineName: !GetAtt LexiGuardWorkflow.Name
         - S3ReadPolicy:
-            BucketName: !Ref BucketName
+            BucketName: !If [HasBucketName, !Ref BucketName, !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"]
       Events:
         NewFileUpload:
           Type: S3
@@ -252,6 +279,7 @@ Resources:
   LexiGuardKBSync:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${ResourcePrefix}-lexiguard-kb-sync"
       CodeUri: src/
       Handler: kb_sync.lambda_handler
       Runtime: python3.11
@@ -272,6 +300,7 @@ Resources:
   LexiGuardFetcher:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${ResourcePrefix}-lexiguard-fetcher"
       CodeUri: src/
       Handler: fetcher.lambda_handler
       Runtime: python3.11
@@ -285,6 +314,7 @@ Resources:
         GetCases:
           Type: Api
           Properties:
+            RestApiId: !Ref LexiGuardApi
             Path: /cases
             Method: get
 
@@ -292,6 +322,7 @@ Resources:
   LexiGuardDeleter:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${ResourcePrefix}-lexiguard-deleter"
       CodeUri: src/
       Handler: deleter.lambda_handler
       Runtime: python3.11
@@ -309,7 +340,10 @@ Resources:
             - Effect: Allow
               Action:
                 - "s3:DeleteObject"
-              Resource: !Sub "arn:aws:s3:::${BucketName}/*"
+              Resource: !If
+                - HasBucketName
+                - !Sub "arn:aws:s3:::${BucketName}/*"
+                - !Sub "arn:aws:s3:::lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}/*"
             - Effect: Allow
               Action:
                 - "transcribe:DeleteTranscriptionJob"
@@ -323,6 +357,7 @@ Resources:
         DeleteCase:
           Type: Api
           Properties:
+            RestApiId: !Ref LexiGuardApi
             Path: /cases/{id}
             Method: delete
 
@@ -330,15 +365,16 @@ Resources:
   LexiGuardSigner:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${ResourcePrefix}-lexiguard-signer"
       CodeUri: src/
       Handler: signer.lambda_handler
       Runtime: python3.11
       Environment:
         Variables:
-          BUCKET_NAME: !Ref BucketName
+          BUCKET_NAME: !If [HasBucketName, !Ref BucketName, !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"]
       Policies:
         - S3WritePolicy:
-            BucketName: !Ref BucketName
+            BucketName: !If [HasBucketName, !Ref BucketName, !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"]
         - Statement:
             - Effect: Allow
               Action:
@@ -349,6 +385,7 @@ Resources:
         GetURL:
           Type: Api
           Properties:
+            RestApiId: !Ref LexiGuardApi
             Path: /sign
             Method: get
 
@@ -356,6 +393,7 @@ Resources:
   LexiGuardChat:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: !Sub "${ResourcePrefix}-lexiguard-chat"
       CodeUri: src/
       Handler: chat.lambda_handler
       Runtime: python3.11
@@ -375,16 +413,17 @@ Resources:
         PostChat:
           Type: Api
           Properties:
+            RestApiId: !Ref LexiGuardApi
             Path: /chat
             Method: post         
 
 Outputs:
   ApiUrl:
     Description: "URL for the cases API"
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/cases"
+    Value: !Sub "https://${LexiGuardApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/cases"
   ApiBaseUrl:
     Description: "Base URL for the React API_BASE setting"
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+    Value: !Sub "https://${LexiGuardApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
   DataBucketName:
     Description: "S3 bucket for uploaded audio and transcripts"
     Value: !Ref LexiGuardBucket
