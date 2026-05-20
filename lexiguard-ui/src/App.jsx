@@ -24,14 +24,11 @@ function describeApiFailure(err, forCasesList = true) {
     const noResponse = !res && (err.code === 'ERR_NETWORK' || err.message === 'Network Error');
     if (noResponse) {
       return {
-        headline: forCasesList
-          ? 'Could not load the case list (network error)'
-          : 'Could not reach the chat API (network error)',
+        headline: forCasesList ? 'Case list did not load' : 'Chat did not send',
         hints: [
-          'The browser did not get a normal HTTP response. This often happens when API Gateway returns 502/503 while Lambda or a dependency (for example RDS) is down—those error pages sometimes omit CORS headers, so DevTools shows a CORS or network error instead of the real status.',
           forCasesList
-            ? 'Case Intelligence below uses the Knowledge Base route and may still work when that function is healthy.'
-            : 'Verify the POST /chat Lambda and Bedrock Knowledge Base configuration if problems persist.',
+            ? 'Network or server issue (often API or database). Retry, or try chat — it may still work.'
+            : 'Network or server issue. Check the chat API and Bedrock.',
         ],
         httpStatus: undefined,
       };
@@ -46,23 +43,15 @@ function describeApiFailure(err, forCasesList = true) {
       hints.push(bodyText);
     }
 
-    let headline = forCasesList ? 'Cases API request failed' : 'Chat request failed';
+    let headline = forCasesList ? 'Case list failed' : 'Chat failed';
     if (status === 502 || status === 503) {
-      headline = forCasesList ? 'Case list unavailable (bad gateway)' : 'Chat service unavailable (bad gateway)';
-      hints.push(
-        forCasesList
-          ? 'Usually the Lambda behind GET /cases could not talk to RDS or another dependency. Restore the database or check CloudWatch logs. Case Intelligence may still work via the Knowledge Base.'
-          : 'The chat Lambda or Bedrock agent may be failing. Check CloudWatch and IAM permissions for retrieve_and_generate.'
-      );
+      headline = forCasesList ? 'Case list unavailable' : 'Chat unavailable';
+      hints.push(forCasesList ? 'Backend or database may be down.' : 'Check chat Lambda / Bedrock.');
     } else if (status === 500) {
-      headline = forCasesList ? 'Cases API internal error' : 'Chat API internal error';
-      hints.push(
-        forCasesList
-          ? 'Check Lambda logs for the list-cases handler. Chat uses a separate endpoint.'
-          : 'Check Lambda logs for the chat handler and Bedrock responses.'
-      );
+      headline = forCasesList ? 'Case list error' : 'Chat error';
+      hints.push('See server logs.');
     } else if (status === 403 || status === 401) {
-      headline = forCasesList ? 'Cases API rejected the request' : 'Chat API rejected the request';
+      headline = forCasesList ? 'Case list access denied' : 'Chat access denied';
     }
 
     if (!hints.length) hints.push(err.message || 'Unknown error');
@@ -248,8 +237,8 @@ function App() {
         <div className="lg:col-span-8 space-y-8">
           <div className="bg-gray-900 p-6 rounded-2xl border border-gray-800 shadow-xl">
             <h2 className="text-lg font-semibold mb-3 flex items-center gap-2 text-blue-400"><Upload size={18} /> New Case Intake</h2>
-            <p className="text-sm text-gray-400 mb-4 leading-relaxed">
-              Upload a <span className="text-gray-300">legal-audio</span> recording for a new matter. Allowed files are standard browser audio types (for example <span className="font-mono text-gray-300">.mp3</span>, <span className="font-mono text-gray-300">.m4a</span>, <span className="font-mono text-gray-300">.wav</span>, <span className="font-mono text-gray-300">.webm</span>)—anything your file picker offers under audio. After processing, the case appears in the table below.
+            <p className="text-sm text-gray-400 mb-4">
+              Upload legal-audio files (<span className="font-mono text-gray-300">.mp3</span> and other audio types). New cases appear in the table when processing finishes.
             </p>
             <input
               ref={fileInputRef}
@@ -259,8 +248,8 @@ function App() {
               disabled={isUploading}
               className="block text-sm text-gray-400 file:mr-4 file:py-2 file:px-6 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
             />
-            {isUploading && <div className="mt-4 text-blue-400 animate-pulse">Uploading to S3...</div>}
-            {isProcessingUpload && !isUploading && <div className="mt-4 text-blue-400 animate-pulse">Processing audio and refreshing cases...</div>}
+            {isUploading && <div className="mt-4 text-blue-400 animate-pulse">Uploading…</div>}
+            {isProcessingUpload && !isUploading && <div className="mt-4 text-blue-400 animate-pulse">Processing…</div>}
           </div>
 
           <div className="bg-gray-900 rounded-2xl border border-gray-800 shadow-xl overflow-hidden">
@@ -271,11 +260,13 @@ function App() {
                     <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-400" aria-hidden />
                     <div className="min-w-0">
                       <p className="font-medium text-amber-100">{casesFetchError.headline}</p>
-                      <ul className="mt-2 list-disc space-y-1.5 pl-5 text-xs leading-relaxed text-amber-100/85">
-                        {casesFetchError.hints.map((line, i) => (
-                          <li key={i}>{line}</li>
-                        ))}
-                      </ul>
+                      {casesFetchError.hints.length > 0 && (
+                        <ul className="mt-1.5 list-disc space-y-1 pl-4 text-xs text-amber-100/80">
+                          {casesFetchError.hints.map((line, i) => (
+                            <li key={i}>{line}</li>
+                          ))}
+                        </ul>
+                      )}
                     </div>
                   </div>
                   <button
@@ -316,14 +307,14 @@ function App() {
                 {cases.length === 0 && !casesFetchError && (
                   <tr>
                     <td colSpan={5} className="p-6 text-center text-gray-500 text-sm">
-                      No cases loaded yet. Upload legal audio above, or wait for processing.
+                      No cases yet.
                     </td>
                   </tr>
                 )}
                 {cases.length === 0 && casesFetchError && (
                   <tr>
                     <td colSpan={5} className="p-4 text-center text-gray-500 text-xs">
-                      Table hidden until the cases API succeeds — use Retry above.
+                      Retry above to load cases.
                     </td>
                   </tr>
                 )}
@@ -334,20 +325,17 @@ function App() {
 
         <div className="lg:col-span-4 bg-gray-900 p-6 rounded-2xl border border-gray-800 shadow-xl flex flex-col h-[600px]">
           <h2 className="text-lg font-semibold mb-3 flex items-center gap-2 border-b border-gray-800 pb-4 text-purple-400"><MessageSquare size={18} /> Case Intelligence</h2>
-          <p className="text-xs text-gray-500 mb-4 leading-relaxed">
-            Ask natural-language questions about your uploaded legal audio and extracted case knowledge (clients, matters, fees, timelines, disputes). Use <span className="text-gray-400">Enter</span> to send; answers draw from the knowledge base built from your intakes.
+          <p className="text-xs text-gray-500 mb-3">
+            Ask about your matters. <span className="text-gray-400">Enter</span> to send. Answers use the knowledge base.
             {casesFetchError && (
-              <span className="mt-2 block rounded-lg border border-purple-500/25 bg-purple-950/20 p-2 text-purple-200/90">
-                The case list uses the database; if it fails, you can still try Case Intelligence—answers come from the Knowledge Base, not the cases table.
+              <span className="mt-2 block text-purple-300/90">
+                List failed — chat may still work.
               </span>
             )}
           </p>
           <div className="flex-grow overflow-y-auto mb-6 text-sm text-gray-300 bg-black/20 p-4 rounded-xl space-y-4">
             {messages.length === 0 && !isChatting && (
-              <div className="text-gray-500 space-y-2">
-                <p className="text-sm">Start by typing a question below—for example, summarize a party&apos;s position, list key dates, or clarify fee terms.</p>
-                <p className="text-xs text-gray-600">Upload at least one legal-audio intake first so the model has case context to work from.</p>
-              </div>
+              <p className="text-sm text-gray-500">Type a question, then Ask or Enter.</p>
             )}
             {messages.map((message, idx) => (
               <div
