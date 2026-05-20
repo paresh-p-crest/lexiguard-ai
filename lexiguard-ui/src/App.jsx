@@ -1,13 +1,92 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import axios from 'axios';
-import { Upload, MessageSquare, Gavel, CheckCircle, Trash2 } from 'lucide-react';
+import { Upload, MessageSquare, Gavel, CheckCircle, Trash2, AlertTriangle, RefreshCw } from 'lucide-react';
 
 const API_BASE = "https://9pgo3cfzsk.execute-api.us-east-1.amazonaws.com/Prod";
+
+/**
+ * Human-readable breakdown of axios/API failures (502/RDS, CORS-masked network errors, etc.).
+ * @param {boolean} forCasesList - true for GET /cases errors; false for chat and other calls.
+ * @returns {{ headline: string, hints: string[], httpStatus?: number }}
+ */
+function describeApiFailure(err, forCasesList = true) {
+  if (axios.isAxiosError(err)) {
+    const res = err.response;
+    const status = res?.status;
+    const statusText = res?.statusText;
+    const data = res?.data;
+    let bodyText = '';
+    if (typeof data === 'string') bodyText = data.trim();
+    else if (data && typeof data === 'object') {
+      bodyText = String(data.message ?? data.error ?? '').trim();
+    }
+
+    const noResponse = !res && (err.code === 'ERR_NETWORK' || err.message === 'Network Error');
+    if (noResponse) {
+      return {
+        headline: forCasesList
+          ? 'Could not load the case list (network error)'
+          : 'Could not reach the chat API (network error)',
+        hints: [
+          'The browser did not get a normal HTTP response. This often happens when API Gateway returns 502/503 while Lambda or a dependency (for example RDS) is down—those error pages sometimes omit CORS headers, so DevTools shows a CORS or network error instead of the real status.',
+          forCasesList
+            ? 'Case Intelligence below uses the Knowledge Base route and may still work when that function is healthy.'
+            : 'Verify the POST /chat Lambda and Bedrock Knowledge Base configuration if problems persist.',
+        ],
+        httpStatus: undefined,
+      };
+    }
+
+    const hints = [];
+    if (status) {
+      hints.push(
+        `HTTP ${status}${statusText && statusText !== 'unknown' ? ` ${statusText}` : ''}${bodyText ? ` — ${bodyText}` : ''}`.trim()
+      );
+    } else if (bodyText) {
+      hints.push(bodyText);
+    }
+
+    let headline = forCasesList ? 'Cases API request failed' : 'Chat request failed';
+    if (status === 502 || status === 503) {
+      headline = forCasesList ? 'Case list unavailable (bad gateway)' : 'Chat service unavailable (bad gateway)';
+      hints.push(
+        forCasesList
+          ? 'Usually the Lambda behind GET /cases could not talk to RDS or another dependency. Restore the database or check CloudWatch logs. Case Intelligence may still work via the Knowledge Base.'
+          : 'The chat Lambda or Bedrock agent may be failing. Check CloudWatch and IAM permissions for retrieve_and_generate.'
+      );
+    } else if (status === 500) {
+      headline = forCasesList ? 'Cases API internal error' : 'Chat API internal error';
+      hints.push(
+        forCasesList
+          ? 'Check Lambda logs for the list-cases handler. Chat uses a separate endpoint.'
+          : 'Check Lambda logs for the chat handler and Bedrock responses.'
+      );
+    } else if (status === 403 || status === 401) {
+      headline = forCasesList ? 'Cases API rejected the request' : 'Chat API rejected the request';
+    }
+
+    if (!hints.length) hints.push(err.message || 'Unknown error');
+
+    return { headline, hints, httpStatus: status };
+  }
+
+  return {
+    headline: 'Request failed',
+    hints: [String(err?.message || err || 'Unknown error')],
+    httpStatus: undefined,
+  };
+}
+
+function formatFailureForChat(err) {
+  const { headline, hints } = describeApiFailure(err, false);
+  return [headline, ...hints].join('\n');
+}
 
 function App() {
   const fileInputRef = useRef(null);
   const caseRefreshTimerRef = useRef(null);
   const [cases, setCases] = useState([]);
+  const [casesFetchError, setCasesFetchError] = useState(null);
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
@@ -18,10 +97,15 @@ function App() {
   const fetchCases = useCallback(async () => {
     try {
       const res = await axios.get(`${API_BASE}/cases`);
-      setCases(res.data);
-      return res.data;
-    } catch (err) { console.error("API Error", err); }
-    return [];
+      const data = Array.isArray(res.data) ? res.data : [];
+      setCases(data);
+      setCasesFetchError(null);
+      return data;
+    } catch (err) {
+      console.error('API Error', err);
+      setCasesFetchError(describeApiFailure(err, true));
+      return null;
+    }
   }, []);
 
   useEffect(() => { fetchCases(); }, [fetchCases]);
@@ -46,6 +130,16 @@ function App() {
     const poll = async () => {
       attempts += 1;
       const latestCases = await fetchCases();
+      if (latestCases === null) {
+        if (attempts >= maxAttempts) {
+          setIsProcessingUpload(false);
+          caseRefreshTimerRef.current = null;
+          return;
+        }
+        caseRefreshTimerRef.current = setTimeout(poll, 5000);
+        return;
+      }
+
       const hasNewCase = latestCases.length > previousCaseCount;
 
       if (hasNewCase || attempts >= maxAttempts) {
@@ -108,8 +202,11 @@ function App() {
       setMessages((prev) => [...prev, { role: "assistant", text: res.data.answer }]);
     } catch (err) {
       console.error("Chat failed", err);
-      const message = err.response?.data?.error || err.message || "AI could not reach Knowledge Base.";
-      setMessages((prev) => [...prev, { role: "assistant", text: `Error: ${message}` }]);
+      const fromBody = err.response?.data?.error || err.response?.data?.message;
+      const message = fromBody
+        ? `Error: ${fromBody}`
+        : `Error:\n${formatFailureForChat(err)}`;
+      setMessages((prev) => [...prev, { role: "assistant", text: message }]);
     }
     setIsChatting(false);
   };
@@ -167,6 +264,31 @@ function App() {
           </div>
 
           <div className="bg-gray-900 rounded-2xl border border-gray-800 shadow-xl overflow-hidden">
+            {casesFetchError && (
+              <div className="border-b border-amber-500/30 bg-amber-950/25 p-4 text-sm">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex min-w-0 flex-1 gap-3">
+                    <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-400" aria-hidden />
+                    <div className="min-w-0">
+                      <p className="font-medium text-amber-100">{casesFetchError.headline}</p>
+                      <ul className="mt-2 list-disc space-y-1.5 pl-5 text-xs leading-relaxed text-amber-100/85">
+                        {casesFetchError.hints.map((line, i) => (
+                          <li key={i}>{line}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void fetchCases()}
+                    className="inline-flex shrink-0 items-center justify-center gap-2 self-start rounded-lg border border-amber-500/40 bg-amber-900/40 px-3 py-2 text-xs font-medium text-amber-100 hover:bg-amber-900/60"
+                  >
+                    <RefreshCw size={14} aria-hidden />
+                    Retry cases
+                  </button>
+                </div>
+              </div>
+            )}
             <table className="w-full text-left">
               <thead className="text-gray-500 text-xs uppercase bg-gray-800/50">
                 <tr><th className="p-4">Client</th><th className="p-4">Matter</th><th className="p-4 text-right">Fee</th><th className="p-4 text-center">Status</th><th className="p-4 text-right">Action</th></tr>
@@ -191,6 +313,20 @@ function App() {
                     </td>
                   </tr>
                 ))}
+                {cases.length === 0 && !casesFetchError && (
+                  <tr>
+                    <td colSpan={5} className="p-6 text-center text-gray-500 text-sm">
+                      No cases loaded yet. Upload legal audio above, or wait for processing.
+                    </td>
+                  </tr>
+                )}
+                {cases.length === 0 && casesFetchError && (
+                  <tr>
+                    <td colSpan={5} className="p-4 text-center text-gray-500 text-xs">
+                      Table hidden until the cases API succeeds — use Retry above.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -200,6 +336,11 @@ function App() {
           <h2 className="text-lg font-semibold mb-3 flex items-center gap-2 border-b border-gray-800 pb-4 text-purple-400"><MessageSquare size={18} /> Case Intelligence</h2>
           <p className="text-xs text-gray-500 mb-4 leading-relaxed">
             Ask natural-language questions about your uploaded legal audio and extracted case knowledge (clients, matters, fees, timelines, disputes). Use <span className="text-gray-400">Enter</span> to send; answers draw from the knowledge base built from your intakes.
+            {casesFetchError && (
+              <span className="mt-2 block rounded-lg border border-purple-500/25 bg-purple-950/20 p-2 text-purple-200/90">
+                The case list uses the database; if it fails, you can still try Case Intelligence—answers come from the Knowledge Base, not the cases table.
+              </span>
+            )}
           </p>
           <div className="flex-grow overflow-y-auto mb-6 text-sm text-gray-300 bg-black/20 p-4 rounded-xl space-y-4">
             {messages.length === 0 && !isChatting && (
@@ -217,7 +358,7 @@ function App() {
                   className={`max-w-[85%] rounded-2xl px-4 py-3 leading-relaxed ${
                     message.role === "user"
                       ? "bg-blue-600 text-white rounded-br-md"
-                      : "bg-gray-800 text-gray-100 rounded-bl-md border border-gray-700"
+                      : "bg-gray-800 text-gray-100 rounded-bl-md border border-gray-700 whitespace-pre-wrap break-words"
                   }`}
                 >
                   {message.text}
