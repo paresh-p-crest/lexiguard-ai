@@ -150,7 +150,10 @@ function App() {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         <div className="lg:col-span-8 space-y-8">
           <div className="bg-gray-900 p-6 rounded-2xl border border-gray-800 shadow-xl">
-            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2 text-blue-400"><Upload size={18} /> New Case Intake</h2>
+            <h2 className="text-lg font-semibold mb-3 flex items-center gap-2 text-blue-400"><Upload size={18} /> New Case Intake</h2>
+            <p className="text-sm text-gray-400 mb-4 leading-relaxed">
+              Upload a <span className="text-gray-300">legal-audio</span> recording for a new matter. Allowed files are standard browser audio types (for example <span className="font-mono text-gray-300">.mp3</span>, <span className="font-mono text-gray-300">.m4a</span>, <span className="font-mono text-gray-300">.wav</span>, <span className="font-mono text-gray-300">.webm</span>)—anything your file picker offers under audio. After processing, the case appears in the table below.
+            </p>
             <input
               ref={fileInputRef}
               type="file"
@@ -194,10 +197,16 @@ function App() {
         </div>
 
         <div className="lg:col-span-4 bg-gray-900 p-6 rounded-2xl border border-gray-800 shadow-xl flex flex-col h-[600px]">
-          <h2 className="text-lg font-semibold mb-4 flex items-center gap-2 border-b border-gray-800 pb-4 text-purple-400"><MessageSquare size={18} /> Case Intelligence</h2>
+          <h2 className="text-lg font-semibold mb-3 flex items-center gap-2 border-b border-gray-800 pb-4 text-purple-400"><MessageSquare size={18} /> Case Intelligence</h2>
+          <p className="text-xs text-gray-500 mb-4 leading-relaxed">
+            Ask natural-language questions about your uploaded legal audio and extracted case knowledge (clients, matters, fees, timelines, disputes). Use <span className="text-gray-400">Enter</span> to send; answers draw from the knowledge base built from your intakes.
+          </p>
           <div className="flex-grow overflow-y-auto mb-6 text-sm text-gray-300 bg-black/20 p-4 rounded-xl space-y-4">
             {messages.length === 0 && !isChatting && (
-              <div className="text-gray-500">Ask a question about the case...</div>
+              <div className="text-gray-500 space-y-2">
+                <p className="text-sm">Start by typing a question below—for example, summarize a party&apos;s position, list key dates, or clarify fee terms.</p>
+                <p className="text-xs text-gray-600">Upload at least one legal-audio intake first so the model has case context to work from.</p>
+              </div>
             )}
             {messages.map((message, idx) => (
               <div
