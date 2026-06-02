@@ -19,8 +19,8 @@ confirm_changeset = true
 resolve_s3 = true
 stack_name = "lexiguard-stack"
 s3_prefix = "lexiguard-stack"
-region = "us-east-1"
 image_repositories = []
+parameter_overrides = "ResourcePrefix=\"sandbox\" BucketName=\"lexiguard-legal-data-ps-b402\" KnowledgeBaseId=\"TUGECFALFA\" KnowledgeBaseDataSourceId=\"\""
 
 [default.package.parameters]
 resolve_s3 = true

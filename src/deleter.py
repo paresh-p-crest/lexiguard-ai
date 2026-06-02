@@ -2,8 +2,9 @@ import json
 import os
 
 import boto3
-import psycopg2
 from botocore.exceptions import ClientError
+
+import storage
 
 s3 = boto3.client('s3')
 transcribe = boto3.client('transcribe')
@@ -73,7 +74,6 @@ def lambda_handler(event, context):
     if event.get('httpMethod') == 'OPTIONS':
         return {"statusCode": 200, "headers": HEADERS, "body": ""}
 
-    conn = None
     try:
         case_id = (event.get('pathParameters') or {}).get('id')
         if not case_id:
@@ -83,56 +83,21 @@ def lambda_handler(event, context):
                 "body": json.dumps({"error": "Case id is required"})
             }
 
-        conn = psycopg2.connect(
-            host=os.environ['DB_HOST'],
-            database=os.environ['DB_NAME'],
-            user=os.environ['DB_USER'],
-            password=os.environ['DB_PASS']
-        )
-        cur = conn.cursor()
-
-        cur.execute("ALTER TABLE legal_cases ADD COLUMN IF NOT EXISTS source_bucket TEXT")
-        cur.execute("ALTER TABLE legal_cases ADD COLUMN IF NOT EXISTS source_key TEXT")
-        cur.execute("ALTER TABLE legal_cases ADD COLUMN IF NOT EXISTS transcript_bucket TEXT")
-        cur.execute("ALTER TABLE legal_cases ADD COLUMN IF NOT EXISTS transcript_key TEXT")
-        cur.execute("ALTER TABLE legal_cases ADD COLUMN IF NOT EXISTS kb_doc_bucket TEXT")
-        cur.execute("ALTER TABLE legal_cases ADD COLUMN IF NOT EXISTS kb_doc_key TEXT")
-        cur.execute("ALTER TABLE legal_cases ADD COLUMN IF NOT EXISTS transcribe_job_name TEXT")
-
-        cur.execute("""
-            SELECT
-                source_bucket,
-                source_key,
-                transcript_bucket,
-                transcript_key,
-                kb_doc_bucket,
-                kb_doc_key,
-                transcribe_job_name
-            FROM legal_cases
-            WHERE id = %s
-        """, (case_id,))
-        row = cur.fetchone()
-
-        if not row:
-            cur.close()
-            conn.close()
+        case = storage.get_case(case_id)
+        if not case:
             return {
                 "statusCode": 404,
                 "headers": HEADERS,
                 "body": json.dumps({"error": "Case not found"})
             }
 
-        source_bucket, source_key, transcript_bucket, transcript_key, kb_doc_bucket, kb_doc_key, transcribe_job_name = row
-        delete_s3_object(source_bucket, source_key)
-        delete_s3_object(transcript_bucket, transcript_key)
-        delete_s3_object(kb_doc_bucket, kb_doc_key)
-        delete_kb_access_check_file(kb_doc_bucket, kb_doc_key)
-        delete_transcribe_job(transcribe_job_name)
+        delete_s3_object(case.get('source_bucket'), case.get('source_key'))
+        delete_s3_object(case.get('transcript_bucket'), case.get('transcript_key'))
+        delete_s3_object(case.get('kb_doc_bucket'), case.get('kb_doc_key'))
+        delete_kb_access_check_file(case.get('kb_doc_bucket'), case.get('kb_doc_key'))
+        delete_transcribe_job(case.get('transcribe_job_name'))
 
-        cur.execute("DELETE FROM legal_cases WHERE id = %s", (case_id,))
-        conn.commit()
-        cur.close()
-        conn.close()
+        storage.delete_case(case_id)
 
         try:
             start_kb_sync()
@@ -145,10 +110,6 @@ def lambda_handler(event, context):
             "body": json.dumps({"deleted": True})
         }
     except Exception as e:
-        if conn:
-            conn.rollback()
-            conn.close()
-
         print(f"Delete error: {str(e)}")
         return {
             "statusCode": 500,

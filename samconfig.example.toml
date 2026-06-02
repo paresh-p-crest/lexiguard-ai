@@ -19,14 +19,7 @@ resolve_s3 = true
 s3_prefix = "lexiguard-sandbox-YOURNAME"
 parameter_overrides = [
   "ResourcePrefix=yourname",
-  "BucketName=",
+  "BucketName=lexiguard-legal-data-ps-b402",
   "KnowledgeBaseId=YOUR_BEDROCK_KB_ID",
-  "KnowledgeBaseDataSourceId=",
-  "DBName=lexiguard",
-  "DBUsername=dbadmin",
-  "DBPassword=CHANGE_ME_FOR_SANDBOX",
-  "DBInstanceClass=db.t3.micro",
-  "VpcId=vpc-xxxxxxxxxxxxxxxxx",
-  "DBSubnetIds=subnet-xxxxxxxxxxxxxxxxx,subnet-yyyyyyyyyyyyyyyyy",
-  "DBAllowedCidr=0.0.0.0/0"
+  "KnowledgeBaseDataSourceId="
 ]

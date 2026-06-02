@@ -1,9 +1,10 @@
 import json
 import boto3
 import os
-import psycopg2
 import re # Added for text cleaning
 import urllib.parse
+
+import storage
 
 s3 = boto3.client('s3')
 bedrock = boto3.client('bedrock-runtime')
@@ -73,78 +74,23 @@ def lambda_handler(event, context):
         else:
             ai_json = json.loads(raw_ai_response)
 
-        # 3. SAVE TO DATABASE
-        conn = psycopg2.connect(
-            host=os.environ['DB_HOST'],
-            database=os.environ['DB_NAME'],
-            user=os.environ['DB_USER'],
-            password=os.environ['DB_PASS'],
-            connect_timeout=10
-        )
-        cur = conn.cursor()
-        
-        # Create Table (Always runs first)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS legal_cases (
-                id SERIAL PRIMARY KEY,
-                client_name TEXT,
-                case_type TEXT,
-                address TEXT,
-                fee TEXT,
-                source_bucket TEXT,
-                source_key TEXT,
-                transcript_bucket TEXT,
-                transcript_key TEXT,
-                kb_doc_bucket TEXT,
-                kb_doc_key TEXT,
-                transcribe_job_name TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+        # 3. SAVE TO DYNAMODB
+        case_id = storage.save_case({
+            "client_name": ai_json.get('Client_Name', 'N/A'),
+            "case_type": ai_json.get('Case_Type', 'N/A'),
+            "address": ai_json.get('Property_Address', 'N/A'),
+            "fee": ai_json.get('Fee_Amount', 'N/A'),
+            "source_bucket": source_bucket,
+            "source_key": source_key,
+            "transcript_bucket": transcript_bucket,
+            "transcript_key": transcript_key,
+            "kb_doc_bucket": kb_doc_bucket,
+            "kb_doc_key": kb_doc_key,
+            "transcribe_job_name": transcription_job.get('TranscriptionJobName'),
+        })
+        print(f"Successfully saved case {case_id} to DynamoDB!")
 
-        cur.execute("ALTER TABLE legal_cases ADD COLUMN IF NOT EXISTS source_bucket TEXT")
-        cur.execute("ALTER TABLE legal_cases ADD COLUMN IF NOT EXISTS source_key TEXT")
-        cur.execute("ALTER TABLE legal_cases ADD COLUMN IF NOT EXISTS transcript_bucket TEXT")
-        cur.execute("ALTER TABLE legal_cases ADD COLUMN IF NOT EXISTS transcript_key TEXT")
-        cur.execute("ALTER TABLE legal_cases ADD COLUMN IF NOT EXISTS kb_doc_bucket TEXT")
-        cur.execute("ALTER TABLE legal_cases ADD COLUMN IF NOT EXISTS kb_doc_key TEXT")
-        cur.execute("ALTER TABLE legal_cases ADD COLUMN IF NOT EXISTS transcribe_job_name TEXT")
-        
-        cur.execute("""
-            INSERT INTO legal_cases (
-                client_name,
-                case_type,
-                address,
-                fee,
-                source_bucket,
-                source_key,
-                transcript_bucket,
-                transcript_key,
-                kb_doc_bucket,
-                kb_doc_key,
-                transcribe_job_name
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (
-            ai_json.get('Client_Name', 'N/A'), 
-            ai_json.get('Case_Type', 'N/A'), 
-            ai_json.get('Property_Address', 'N/A'), 
-            ai_json.get('Fee_Amount', 'N/A'),
-            source_bucket,
-            source_key,
-            transcript_bucket,
-            transcript_key,
-            kb_doc_bucket,
-            kb_doc_key,
-            transcription_job.get('TranscriptionJobName')
-        ))
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-        print("Successfully saved to RDS!")
-        
-        return {"status": "SUCCESS"}
+        return {"status": "SUCCESS", "caseId": str(case_id)}
 
     except Exception as e:
         print(f"ERROR: {str(e)}")

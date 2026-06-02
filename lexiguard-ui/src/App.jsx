@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { Upload, MessageSquare, Gavel, CheckCircle, Trash2, AlertTriangle, RefreshCw } from 'lucide-react';
 
-const API_BASE = "https://9pgo3cfzsk.execute-api.us-east-1.amazonaws.com/Prod";
+const API_BASE =
+  import.meta.env.VITE_API_BASE ||
+  "https://9pgo3cfzsk.execute-api.us-east-1.amazonaws.com/Prod";
 
 /**
- * Human-readable breakdown of axios/API failures (502/RDS, CORS-masked network errors, etc.).
+ * Human-readable breakdown of axios/API failures (502, CORS-masked network errors, etc.).
  * @param {boolean} forCasesList - true for GET /cases errors; false for chat and other calls.
  * @returns {{ headline: string, hints: string[], httpStatus?: number }}
  */
@@ -27,7 +29,7 @@ function describeApiFailure(err, forCasesList = true) {
         headline: forCasesList ? 'Case list did not load' : 'Chat did not send',
         hints: [
           forCasesList
-            ? 'Network or server issue (often API or database). Retry, or try chat — it may still work.'
+            ? 'Network or server issue (often API or backend). Retry, or try chat — it may still work.'
             : 'Network or server issue. Check the chat API and Bedrock.',
         ],
         httpStatus: undefined,
@@ -46,7 +48,7 @@ function describeApiFailure(err, forCasesList = true) {
     let headline = forCasesList ? 'Case list failed' : 'Chat failed';
     if (status === 502 || status === 503) {
       headline = forCasesList ? 'Case list unavailable' : 'Chat unavailable';
-      hints.push(forCasesList ? 'Backend or database may be down.' : 'Check chat Lambda / Bedrock.');
+      hints.push(forCasesList ? 'Backend API may be down.' : 'Check chat Lambda / Bedrock.');
     } else if (status === 500) {
       headline = forCasesList ? 'Case list error' : 'Chat error';
       hints.push('See server logs.');

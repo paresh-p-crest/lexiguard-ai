@@ -11,8 +11,8 @@ Parameters:
     Description: Lowercase namespace/prefix for generated resource names, for example paresh, friend1, demo.
   BucketName:
     Type: String
-    Default: ""
-    Description: Optional globally unique S3 bucket name. Leave blank to generate one from ResourcePrefix, account, and region.
+    Default: lexiguard-legal-data-ps-b402
+    Description: Existing S3 bucket for audio uploads, Transcribe JSON, and KB transcripts. This stack does not create a bucket.
   KnowledgeBaseId:
     Type: String
     Default: "TUGECFALFA"
@@ -21,33 +21,6 @@ Parameters:
     Type: String
     Default: ""
     Description: Optional Bedrock KB data source ID. Leave blank to use the first data source in the KB.
-  DBName:
-    Type: String
-    Default: lexiguard
-  DBUsername:
-    Type: String
-    Default: dbadmin
-  DBPassword:
-    Type: String
-    NoEcho: true
-    MinLength: 8
-    Description: PostgreSQL master password. Provide this during deploy.
-  DBInstanceClass:
-    Type: String
-    Default: db.t3.micro
-  VpcId:
-    Type: AWS::EC2::VPC::Id
-    Description: VPC where the PostgreSQL security group is created.
-  DBSubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
-    Description: At least two subnet IDs for the RDS DB subnet group.
-  DBAllowedCidr:
-    Type: String
-    Default: 0.0.0.0/0
-    Description: CIDR allowed to connect to PostgreSQL. Restrict this for real environments.
-
-Conditions:
-  HasBucketName: !Not [!Equals [!Ref BucketName, ""]]
 
 Resources:
   LexiGuardApi:
@@ -101,63 +74,20 @@ Resources:
       AliasName: !Sub "alias/${ResourcePrefix}-lexiguard"
       TargetKeyId: !Ref LexiGuardKey
 
-  LexiGuardBucket:
-    Type: AWS::S3::Bucket
+  # Case records (pay-per-request DynamoDB).
+  LexiGuardCasesTable:
+    Type: AWS::DynamoDB::Table
     Properties:
-      BucketName: !If
-        - HasBucketName
-        - !Ref BucketName
-        - !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: "AES256"
-      # ADD THIS SECTION BELOW
-      CorsConfiguration:
-        CorsRules:
-          - AllowedHeaders: ['*']
-            AllowedMethods: [GET, PUT, POST, HEAD]
-            AllowedOrigins: ['*'] # In production, change this to your real domain
-            MaxAge: 3000     
+      TableName: !Sub "${ResourcePrefix}-lexiguard-cases"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
 
-  # 5. THE DATABASE (Updated with Subnet Group)
-  LexiGuardDB:
-    Type: AWS::RDS::DBInstance
-    Properties:
-      DBInstanceIdentifier: !Sub "${ResourcePrefix}-lexiguard-db"
-      AllocatedStorage: '20'
-      DBInstanceClass: !Ref DBInstanceClass
-      Engine: postgres
-      MasterUsername: !Ref DBUsername
-      MasterUserPassword: !Ref DBPassword
-      DBName: !Ref DBName
-      PubliclyAccessible: true
-      DBSubnetGroupName: !Ref LexiGuardDBSubnetGroup # <--- LINKS TO THE SUBNET GROUP
-      VPCSecurityGroups:
-        - !GetAtt LexiGuardDBSecurityGroup.GroupId
-
-  # 3. THE FIREWALL (Security Group)
-  LexiGuardDBSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupName: !Sub "${ResourcePrefix}-lexiguard-db-sg"
-      GroupDescription: !Sub "Allow ${ResourcePrefix} LexiGuard Lambda to connect to PostgreSQL"
-      VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 5432
-          ToPort: 5432
-          CidrIp: !Ref DBAllowedCidr
-
- # 4. THE DB SUBNET GROUP (Tells RDS which subnets to use)
-  LexiGuardDBSubnetGroup:
-    Type: AWS::RDS::DBSubnetGroup
-    Properties:
-      DBSubnetGroupName: !Sub "${ResourcePrefix}-lexiguard-db-subnets"
-      DBSubnetGroupDescription: "Subnets for LexiGuard RDS"
-      SubnetIds: !Ref DBSubnetIds
-
-  # 4. THE BRAIN (Analyzer Lambda with DB Config)
+  # Analyzer Lambda
   LexiGuardAnalyzer:
     Type: AWS::Serverless::Function
     Properties:
@@ -169,10 +99,7 @@ Resources:
       Environment:
         Variables:
           BEDROCK_MODEL_ID: "anthropic.claude-3-sonnet-20240229-v1:0"
-          DB_HOST: !GetAtt LexiGuardDB.Endpoint.Address
-          DB_NAME: !Ref DBName
-          DB_USER: !Ref DBUsername
-          DB_PASS: !Ref DBPassword
+          CASES_TABLE: !Ref LexiGuardCasesTable
           KB_DOC_PREFIX: "LexiGuard-transcripts/"
       Policies:
         - Statement:
@@ -183,11 +110,13 @@ Resources:
               Action: "kms:Decrypt"
               Resource: !GetAtt LexiGuardKey.Arn
         - S3ReadPolicy:
-            BucketName: !If [HasBucketName, !Ref BucketName, !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"]
+            BucketName: !Ref BucketName
         - S3WritePolicy:
-            BucketName: !If [HasBucketName, !Ref BucketName, !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"]
+            BucketName: !Ref BucketName
+        - DynamoDBCrudPolicy:
+            TableName: !Ref LexiGuardCasesTable
 
-  # (LexiGuardWorkflow and LexiGuardWatchman remain exactly the same as Step 5)
+  # Step Functions workflow
   LexiGuardWorkflow:
     Type: AWS::Serverless::StateMachine
     Properties:
@@ -203,7 +132,7 @@ Resources:
               LanguageCode: "en-US"
               Media:
                 MediaFileUri.$: "States.Format('s3://{}/{}', $.bucket, $.key)"
-              OutputBucketName: !If [HasBucketName, !Ref BucketName, !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"]
+              OutputBucketName: !Ref BucketName
               OutputKey: "LexiGuard-transcribe-json/"
               Settings:
                 ShowSpeakerLabels: true
@@ -249,9 +178,9 @@ Resources:
               Action: ["kms:Decrypt", "kms:GenerateDataKey"]
               Resource: !GetAtt LexiGuardKey.Arn
         - S3ReadPolicy:
-            BucketName: !If [HasBucketName, !Ref BucketName, !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"]
+            BucketName: !Ref BucketName
         - S3WritePolicy:
-            BucketName: !If [HasBucketName, !Ref BucketName, !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"]
+            BucketName: !Ref BucketName
 
   LexiGuardWatchman:
     Type: AWS::Serverless::Function
@@ -267,13 +196,17 @@ Resources:
         - StepFunctionsExecutionPolicy:
             StateMachineName: !GetAtt LexiGuardWorkflow.Name
         - S3ReadPolicy:
-            BucketName: !If [HasBucketName, !Ref BucketName, !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"]
-      Events:
-        NewFileUpload:
-          Type: S3
-          Properties:
-            Bucket: !Ref LexiGuardBucket
-            Events: s3:ObjectCreated:*
+            BucketName: !Ref BucketName
+
+  # Allow the existing S3 bucket to invoke watchman (notification configured on the bucket).
+  LexiGuardWatchmanS3Permission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LexiGuardWatchman
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub "arn:aws:s3:::${BucketName}"
+      SourceAccount: !Ref AWS::AccountId
 
   # Sync Bedrock Knowledge Base after transcript changes
   LexiGuardKBSync:
@@ -296,7 +229,6 @@ Resources:
                 - "bedrock:ListDataSources"
               Resource: "*"
 
-  # 6. THE API LAMBDA (To read from DB)
   LexiGuardFetcher:
     Type: AWS::Serverless::Function
     Properties:
@@ -304,12 +236,13 @@ Resources:
       CodeUri: src/
       Handler: fetcher.lambda_handler
       Runtime: python3.11
+      Timeout: 15
       Environment:
         Variables:
-          DB_HOST: !GetAtt LexiGuardDB.Endpoint.Address
-          DB_NAME: !Ref DBName
-          DB_USER: !Ref DBUsername
-          DB_PASS: !Ref DBPassword
+          CASES_TABLE: !Ref LexiGuardCasesTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref LexiGuardCasesTable
       Events:
         GetCases:
           Type: Api
@@ -329,10 +262,7 @@ Resources:
       Timeout: 30
       Environment:
         Variables:
-          DB_HOST: !GetAtt LexiGuardDB.Endpoint.Address
-          DB_NAME: !Ref DBName
-          DB_USER: !Ref DBUsername
-          DB_PASS: !Ref DBPassword
+          CASES_TABLE: !Ref LexiGuardCasesTable
           KB_ID: !Ref KnowledgeBaseId
           DATA_SOURCE_ID: !Ref KnowledgeBaseDataSourceId
       Policies:
@@ -340,10 +270,7 @@ Resources:
             - Effect: Allow
               Action:
                 - "s3:DeleteObject"
-              Resource: !If
-                - HasBucketName
-                - !Sub "arn:aws:s3:::${BucketName}/*"
-                - !Sub "arn:aws:s3:::lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}/*"
+              Resource: !Sub "arn:aws:s3:::${BucketName}/*"
             - Effect: Allow
               Action:
                 - "transcribe:DeleteTranscriptionJob"
@@ -353,6 +280,8 @@ Resources:
                 - "bedrock:StartIngestionJob"
                 - "bedrock:ListDataSources"
               Resource: "*"
+        - DynamoDBCrudPolicy:
+            TableName: !Ref LexiGuardCasesTable
       Events:
         DeleteCase:
           Type: Api
@@ -371,10 +300,10 @@ Resources:
       Runtime: python3.11
       Environment:
         Variables:
-          BUCKET_NAME: !If [HasBucketName, !Ref BucketName, !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"]
+          BUCKET_NAME: !Ref BucketName
       Policies:
         - S3WritePolicy:
-            BucketName: !If [HasBucketName, !Ref BucketName, !Sub "lexiguard-${ResourcePrefix}-${AWS::AccountId}-${AWS::Region}"]
+            BucketName: !Ref BucketName
         - Statement:
             - Effect: Allow
               Action:
@@ -426,10 +355,10 @@ Outputs:
     Value: !Sub "https://${LexiGuardApi}.execute-api.${AWS::Region}.amazonaws.com/Prod"
   DataBucketName:
     Description: "S3 bucket for uploaded audio and transcripts"
-    Value: !Ref LexiGuardBucket
-  DatabaseEndpoint:
-    Description: "RDS PostgreSQL endpoint"
-    Value: !GetAtt LexiGuardDB.Endpoint.Address
+    Value: !Ref BucketName
+  CasesTableName:
+    Description: "DynamoDB table for structured case records"
+    Value: !Ref LexiGuardCasesTable
   WorkflowArn:
     Description: "LexiGuard Step Functions workflow ARN"
     Value: !Ref LexiGuardWorkflow

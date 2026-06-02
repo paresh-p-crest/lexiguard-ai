@@ -1,6 +1,6 @@
 import json
-import os
-import psycopg2
+
+import storage
 
 HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -8,40 +8,26 @@ HEADERS = {
     "Access-Control-Allow-Methods": "OPTIONS,GET"
 }
 
+
 def lambda_handler(event, context):
     try:
-        conn = psycopg2.connect(
-            host=os.environ['DB_HOST'],
-            database=os.environ['DB_NAME'],
-            user=os.environ['DB_USER'],
-            password=os.environ['DB_PASS']
-        )
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT id, client_name, case_type, address, fee, created_at
-            FROM legal_cases
-            ORDER BY created_at DESC
-        """)
-        
-        rows = cur.fetchall()
         cases = []
-        for r in rows:
+        for row in storage.list_cases():
             cases.append({
-                "id": r[0],
-                "client": r[1],
-                "type": r[2],
-                "address": r[3],
-                "fee": r[4],
-                "date": str(r[5])
+                "id": str(row.get("id")),
+                "client": row.get("client_name"),
+                "type": row.get("case_type"),
+                "address": row.get("address"),
+                # DynamoDB may return Decimal for number fields; always stringify safely.
+                "fee": str(row.get("fee")) if row.get("fee") is not None else None,
+                "date": str(row.get("created_at")) if row.get("created_at") is not None else None,
             })
-        
-        cur.close()
-        conn.close()
 
         return {
             "statusCode": 200,
             "headers": HEADERS,
-            "body": json.dumps(cases)
+            "body": json.dumps(cases, default=str)
         }
     except Exception as e:
-        return {"statusCode": 500, "headers": HEADERS, "body": str(e)}
+        print(f"Fetcher error: {str(e)}")
+        return {"statusCode": 500, "headers": HEADERS, "body": json.dumps({"error": str(e)})}
