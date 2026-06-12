@@ -2,6 +2,8 @@
 
 LexiGuard AI is a serverless legal-audio intake and intelligence application. Users upload an audio conversation, AWS transcribes it, Amazon Bedrock extracts structured case details, DynamoDB stores the case record, and a Bedrock Knowledge Base answers questions over the generated transcript.
 
+**Demo doc:** [documentation.md](./documentation.md) · [online](https://legal-audio-ai.vercel.app/documentation)
+
 ## Architecture
 
 - **Frontend:** React + Vite app in `lexiguard-ui/`
@@ -17,6 +19,7 @@ LexiGuard AI is a serverless legal-audio intake and intelligence application. Us
 
 ## Important Files
 
+- `documentation.md` - requirements, technical overview, architecture diagram, demo video link
 - `template.yaml` - single source of truth for backend AWS resources
 - `samconfig.toml` - local SAM deploy settings for one workstation/environment
 - `samconfig.example.toml` - example SAM config for another developer or sandbox

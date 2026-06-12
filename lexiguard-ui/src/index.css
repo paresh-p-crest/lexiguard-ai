@@ -1,3 +1,67 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+.lexiguard-doc {
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: #334155;
+}
+.lexiguard-doc h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #0f172a;
+  margin: 0 0 1rem;
+}
+.lexiguard-doc h2 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #0f172a;
+  margin: 2rem 0 0.75rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid #e2e8f0;
+}
+.lexiguard-doc h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #0f172a;
+  margin: 1.25rem 0 0.5rem;
+}
+.lexiguard-doc p,
+.lexiguard-doc li {
+  margin: 0.5rem 0;
+}
+.lexiguard-doc ul {
+  padding-left: 1.25rem;
+  list-style: disc;
+}
+.lexiguard-doc a {
+  color: #4f46e5;
+  text-decoration: underline;
+}
+.lexiguard-doc table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+  margin: 1rem 0;
+}
+.lexiguard-doc th,
+.lexiguard-doc td {
+  border: 1px solid #e2e8f0;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+.lexiguard-doc th {
+  background: #f8fafc;
+  color: #0f172a;
+}
+.lexiguard-doc code {
+  font-size: 0.8em;
+  background: #f1f5f9;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.lexiguard-doc svg {
+  max-width: 100%;
+  height: auto;
+}
