@@ -247,7 +247,7 @@ cd lexiguard-ui && npm run dev
 </p>
 
 <p style="font-size: 1.2em; font-weight: 600; line-height: 1.6; margin: 0.75em 0;">
-  <a href="https://screenrec.com/share/at6BGZgdpx/">→ Watch recorded walkthrough</a>
+  <a href="https://screenrec.com/share/at6BGZgdpx">→ Watch recorded walkthrough</a>
 </p>
 
 ---
